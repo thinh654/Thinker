@@ -1,0 +1,526 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local Debris = game:GetService("Debris")
+
+-- [ANTI-CHEAT] Khởi tạo an toàn và Anti-Kick cơ bản
+wait(0.5) 
+pcall(function() 
+    local CoreGui = game:GetService("CoreGui")
+    if CoreGui and CoreGui:FindFirstChild("RobloxGui") then CoreGui.RobloxGui.Parent = nil end -- Anti-Kick/Ban
+end)
+
+local pl = Players.LocalPlayer
+local defaultGravity = Workspace.Gravity or 196.2
+local ch, hum, hrp
+local mouse = pl:GetMouse()
+
+-- ===== CẤU HÌNH VÀ TRẠNG THÁI =====
+local config = {
+    flySpeed = 50,
+    runSpeed = 26,
+    defaultWalkSpeed = 16,
+    isFly = false, isRun = false, isGod = false, isNoClip = false, 
+    isFullBright = false, isESP = false, isDeveloperMode = false, isAIGodMode = false,
+    SECRET_KEY = "thinh099015",
+    lastCommandTime = 0 
+}
+
+local espLoop, BV, BG, flyConn = nil, nil, nil, nil
+local buttons = {}
+local currentFunctions = {} 
+local espLines = {} -- Dùng để lưu trữ cả Line và NameTag
+
+local LUXURY_COLOR = Color3.fromRGB(0, 255, 150)
+local USER_CHAT_COLOR = Color3.fromRGB(150, 255, 255)
+local AI_CHAT_COLOR = Color3.fromRGB(0, 255, 150)
+
+local function setupCharacter()
+    pcall(function() 
+        ch = pl.Character or pl.CharacterAdded:Wait()
+        hum = ch:WaitForChild("Humanoid")
+        hrp = ch:WaitForChild("HumanoidRootPart")
+        if config.isRun then hum.WalkSpeed = config.runSpeed end
+        if config.isGod then hum.MaxHealth = math.huge; hum.Health = hum.MaxHealth end
+    end)
+end
+pl.CharacterAdded:Connect(setupCharacter)
+setupCharacter() 
+
+-- Forward Declarations
+local chatLog, logLayout, chatInput, sendBtn -- GUI
+local runSpeedInputBox, speedTextBox -- Dynamic Input
+local devPanel, devPanelBtn, godModeBtn -- Dev Panel
+local PlayerListFrame, TPScroll, TPListLayout -- Teleport List
+
+local function logMsg(sender, txt, col) 
+    if chatLog and logLayout then
+        local lbl = Instance.new("TextLabel", chatLog); lbl.Size = UDim2.new(1, 0, 0, 20)
+        lbl.BackgroundTransparency = 1; lbl.Text = sender .. ": " .. txt; lbl.TextColor3 = col
+        lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Font = Enum.Font.Code; lbl.TextSize = 12
+        chatLog.CanvasSize = UDim2.new(0,0,0, logLayout.AbsoluteContentSize.Y + 20)
+        chatLog.CanvasPosition = Vector2.new(0, logLayout.AbsoluteContentSize.Y)
+    else
+        print("["..sender.."] "..txt)
+    end
+end
+
+-- Function để cập nhật trạng thái nút
+local scroll -- Khai báo Scroll để hàm này hoạt động
+local function updateButtonState(text, isActive)
+    if buttons[text] then
+        buttons[text].state = isActive
+        buttons[text].btn.BackgroundColor3 = isActive and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(50, 50, 50)
+    end
+    -- Cập nhật kích thước scroll khi Run Speed Input thay đổi
+    local offset = runSpeedInputBox and runSpeedInputBox.Visible and 35 or 0
+    if scroll then
+        scroll.Position = UDim2.new(0, 10, 0, 40 + offset)
+        scroll.Size = UDim2.new(0.4, 0, 0.75, -offset)
+    end
+end
+
+-- [FIXED] Toggle Fly ổn định hơn
+local function toggleFly()
+    config.isFly = not config.isFly
+    if config.isFly then
+        Workspace.Gravity = 0; hum.PlatformStand = true
+        if BV then BV:Destroy() end; if BG then BG:Destroy() end; if flyConn then flyConn:Disconnect() end
+
+        BV = Instance.new("BodyVelocity", hrp); BV.MaxForce = Vector3.new(math.huge,math.huge,math.huge)
+        BG = Instance.new("BodyGyro", hrp); BG.MaxTorque = Vector3.new(math.huge,math.huge,math.huge)
+        
+        flyConn = RunService.RenderStepped:Connect(function()
+            if not hrp then return end
+            BG.CFrame = Workspace.CurrentCamera.CFrame
+            local move = Vector3.new(0,0,0); local cam = Workspace.CurrentCamera.CFrame
+            local currentSpeed = UIS:IsKeyDown(Enum.KeyCode.LeftControl) and config.flySpeed * 2 or config.flySpeed
+            
+            if UIS:IsKeyDown(Enum.KeyCode.W) then move = move + cam.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then move = move - cam.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then move = move + cam.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then move = move - cam.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0,1,0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.new(0,1,0) end
+            
+            if move ~= Vector3.new(0,0,0) then BV.Velocity = move.unit * currentSpeed else BV.Velocity = Vector3.new(0,0,0) end
+        end)
+        logMsg("System", "✅ Fly đã bật. Tốc độ hiện tại: " .. config.flySpeed, Color3.fromRGB(0, 200, 255))
+        return true
+    else
+        hum.PlatformStand = false; Workspace.Gravity = defaultGravity
+        if BV then BV:Destroy(); BV = nil end; if BG then BG:Destroy(); BG = nil end
+        if flyConn then flyConn:Disconnect(); flyConn = nil end
+        logMsg("System", "❌ Fly đã tắt. Gravity trở về mặc định.", Color3.fromRGB(255, 100, 0))
+        return false
+    end
+end
+
+-- [IMPROVED] ESP với Tên và Màu sắc
+local function clearESP()
+    for _, item in pairs(espLines) do if item.Parent then item:Destroy() end end
+    espLines = {}
+end
+
+local function drawESP()
+    clearESP() 
+    if not hrp then return end
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= pl and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local targetHrp = player.Character.HumanoidRootPart
+            
+            -- 1. LINE 
+            local lineColor = Color3.fromHSV(math.random(), 1, 1) 
+            local line = Instance.new("Part")
+            line.BrickColor = BrickColor.new(lineColor); line.Material = Enum.Material.ForceField 
+            line.Transparency = 0.5; line.CanCollide = false; line.Anchored = true; line.Parent = Workspace 
+            Debris:AddItem(line, 0.1) 
+            local magnitude = (hrp.Position - targetHrp.Position).magnitude
+            local center = (hrp.Position + targetHrp.Position) / 2
+            line.Size = Vector3.new(0.2, 0.2, magnitude)
+            line.CFrame = CFrame.new(center, targetHrp.Position) * CFrame.Angles(0, math.pi/2, 0)
+            table.insert(espLines, line)
+            
+            -- 2. NAMETAG
+            local nameTag = Instance.new("BillboardGui")
+            nameTag.AlwaysOnTop = true; nameTag.Size = UDim2.new(0, 150, 0, 20); nameTag.ExtentsOffset = Vector3.new(0, 5, 0)
+            local nameLabel = Instance.new("TextLabel", nameTag)
+            nameLabel.Size = UDim2.new(1, 0, 1, 0); nameLabel.BackgroundTransparency = 1; nameLabel.Font = Enum.Font.Code
+            nameLabel.Text = string.format("%s [~%d m]", player.Name, math.floor(magnitude))
+            nameLabel.TextColor3 = lineColor 
+            nameLabel.TextSize = 14
+            
+            nameTag.Parent = targetHrp
+            Debris:AddItem(nameTag, 0.1) 
+            table.insert(espLines, nameTag)
+        end
+    end
+end
+
+local function toggleESP()
+    config.isESP = not config.isESP
+    if config.isESP then 
+        if espLoop then espLoop:Disconnect() end; espLoop = RunService.RenderStepped:Connect(drawESP)
+        logMsg("System", "✅ ESP (Name/Line) đã bật.", Color3.fromRGB(0, 200, 255))
+    else 
+        if espLoop then espLoop:Disconnect(); espLoop = nil end; clearESP() 
+        logMsg("System", "❌ ESP (Name/Line) đã tắt.", Color3.fromRGB(255, 100, 0))
+    end
+    return config.isESP
+end
+
+local function toggleRun()
+    config.isRun = not config.isRun
+    if runSpeedInputBox then runSpeedInputBox.Visible = config.isRun end
+
+    if config.isRun then
+        hum.WalkSpeed = config.runSpeed
+        logMsg("System", "✅ Speed Run đã bật. Tốc độ: " .. config.runSpeed, Color3.fromRGB(0, 200, 255))
+    else
+        hum.WalkSpeed = config.defaultWalkSpeed
+        logMsg("System", "❌ Speed Run đã tắt. Tốc độ: " .. config.defaultWalkSpeed, Color3.fromRGB(255, 100, 0))
+    end
+    updateButtonState("Run Speed (Chỉnh bên dưới)", config.isRun)
+    return config.isRun
+end
+
+local function toggleGodMode() 
+    config.isGod = not config.isGod
+    hum.MaxHealth = config.isGod and math.huge or 100
+    hum.Health = hum.MaxHealth
+    logMsg("System", (config.isGod and "✅" or "❌") .. " God Mode đã " .. (config.isGod and "bật" or "tắt") .. ".", Color3.fromRGB(0, 200, 255))
+    return config.isGod 
+end
+
+local function toggleNoClip() 
+    config.isNoClip = not config.isNoClip
+    for _, v in pairs(ch:GetDescendants()) do 
+        if v:IsA("BasePart") then v.CanCollide = not config.isNoClip end 
+    end
+    logMsg("System", (config.isNoClip and "✅" or "❌") .. " NoClip đã " .. (config.isNoClip and "bật" or "tắt") .. ".", Color3.fromRGB(0, 200, 255))
+    return config.isNoClip 
+end
+
+local function toggleFullBright() 
+    config.isFullBright = not config.isFullBright
+    if config.isFullBright then Lighting.Brightness = 2 else Lighting.Brightness = 1 end
+    logMsg("System", (config.isFullBright and "✅" or "❌") .. " FullBright đã " .. (config.isFullBright and "bật" or "tắt") .. ".", Color3.fromRGB(0, 200, 255))
+    return config.isFullBright 
+end
+
+local function teleportToPlayer(targetPlayer)
+    if hrp and targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local targetPos = targetPlayer.Character.HumanoidRootPart.Position
+        hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+        logMsg("System", "🚀 Đã Teleport đến: " .. targetPlayer.Name, LUXURY_COLOR)
+    end
+end
+
+-- Teleport List Logic
+local function generatePlayerList()
+    for _, child in pairs(TPScroll:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
+    local playerList = Players:GetPlayers(); table.sort(playerList, function(a, b) return a.Name < b.Name end)
+    local count = 0
+    for _, player in pairs(playerList) do
+        if player ~= pl then
+            local pBtn = Instance.new("TextButton", TPScroll); pBtn.Size = UDim2.new(1, 0, 0, 25); pBtn.Text = player.Name
+            pBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 80); pBtn.TextColor3 = Color3.new(1,1,1)
+            pBtn.MouseButton1Click:Connect(function() teleportToPlayer(player); PlayerListFrame.Visible = false end)
+            count = count + 1
+        end
+    end
+    PlayerListFrame.Size = UDim2.new(0, 200, 0, math.min(300, 30 + (count * 30)))
+    TPScroll.CanvasSize = UDim2.new(0, 0, 0, TPListLayout.AbsoluteContentSize.Y + 10)
+end
+
+local function toggleTPList()
+    PlayerListFrame.Visible = not PlayerListFrame.Visible
+    if PlayerListFrame.Visible then generatePlayerList() end
+    logMsg("System", "Danh sách Teleport đã " .. (PlayerListFrame.Visible and "hiện" or "ẩn") .. ".", LUXURY_COLOR)
+    return nil
+end
+
+-- Dev Panel Logic
+local function toggleDevPanel()
+    devPanel.Visible = not devPanel.Visible; 
+    logMsg("System", "Developer Panel đã " .. (devPanel.Visible and "hiện" or "ẩn") .. ".", LUXURY_COLOR)
+    return nil
+end
+
+local function updateDevPanel()
+    -- Hàm này chỉ được gọi khi nhập đúng mã bí mật
+    local devBtnKey = "Developer Panel (Dev Mode)"
+    if not buttons[devBtnKey] then
+        -- Hàm tạo nút phải được định nghĩa trước
+        local function createBtn(text, func)
+            local btn = Instance.new("TextButton", scroll); btn.Size = UDim2.new(1, -5, 0, 25) 
+            btn.Text = text; btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            buttons[text] = {btn = btn, state = false, func = func} 
+            
+            btn.MouseButton1Click:Connect(function()
+                if os.time() - config.lastCommandTime < 0.3 then logMsg("AI", "❌ Anti-Repeat: Chờ 0.3s giữa các lệnh.", Color3.fromRGB(255, 50, 50)); return end -- Anti-Repeat
+                config.lastCommandTime = os.time()
+                
+                local isActive = buttons[text].func()
+                buttons[text].state = isActive or false
+                btn.BackgroundColor3 = isActive and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(50, 50, 50)
+                
+                local offset = runSpeedInputBox.Visible and 35 or 0
+                scroll.Position = UDim2.new(0, 10, 0, 40 + offset)
+                scroll.Size = UDim2.new(0.4, 0, 0.75, -offset)
+            end)
+            return btn
+        end
+        devPanelBtn = createBtn(devBtnKey, toggleDevPanel)
+        buttons[devBtnKey] = {btn = devPanelBtn, state = false, func = toggleDevPanel}
+    end
+end
+
+currentFunctions.toggleFly = toggleFly; currentFunctions.toggleRun = toggleRun; currentFunctions.toggleGodMode = toggleGodMode
+currentFunctions.toggleNoClip = toggleNoClip; currentFunctions.toggleFullBright = toggleFullBright; currentFunctions.toggleESP = toggleESP
+currentFunctions.toggleTPList = toggleTPList
+
+-- ===== AI LOGIC (COMMANDS & CHAT) =====
+local function processAI(txt)
+    local t = txt:lower()
+    
+    if t == config.SECRET_KEY then
+        config.isDeveloperMode = true; updateDevPanel(); return "🔑 **[DEV]** Dev Mode đã kích hoạt. Developer Panel đã được thêm vào menu."
+    end
+    
+    -- [LỆNH ĐIỀU KHIỂN BẬT/TẮT]
+    local function processToggleCommand(command, func, btnText)
+        if t:find(command) then
+            local action = t:find("bật") and "bật" or (t:find("tắt") and "tắt")
+            local currentState = func()
+            if action == "bật" and not currentState then
+                func(); updateButtonState(btnText, true); return "Đã bật " .. command
+            elseif action == "tắt" and currentState then
+                func(); updateButtonState(btnText, false); return "Đã tắt " .. command
+            else
+                return command .. (currentState and " đang bật" or " đang tắt") .. " (Không cần thay đổi)."
+            end
+        end
+        return nil
+    end
+
+    local commandResult = processToggleCommand("fly", toggleFly, "Fly (Tốc độ: " .. config.flySpeed .. ")") or 
+                          processToggleCommand("god mode", toggleGodMode, "God Mode") or
+                          processToggleCommand("noclip", toggleNoClip, "NoClip") or
+                          processToggleCommand("esp", toggleESP, "ESP (Name/Line)") or
+                          processToggleCommand("fullbright", toggleFullBright, "FullBright") or
+                          processToggleCommand("speed run", toggleRun, "Run Speed (Chỉnh bên dưới)")
+
+    if commandResult then return commandResult end
+
+    -- [HƯỚNG DẪN]
+    if t:find("hướng dẫn") or t:find("cách dùng") then
+        return "Tôi có thể hướng dẫn:\n1. Bật/Tắt: Click nút hoặc gõ 'bật/tắt [tính năng]'.\n2. Chỉnh tốc độ Fly: Gõ 'set fly speed [số]' (1-1000).\n3. Chỉnh tốc độ Run: Gõ 'set run speed [số]' hoặc dùng ô nhập Speed.\n4. Teleport: Click nút Teleport List và chọn người chơi."
+    end
+    
+    -- [Lệnh Fly/Run Speed]
+    if t:find("set fly speed") then
+        local value = tonumber(t:gsub("^.*set fly speed (%d+).*$", "%1"))
+        if value and value >= 1 and value <= 1000 then
+            config.flySpeed = value
+            local wasFlying = config.isFly
+            if wasFlying then toggleFly() end -- Tắt rồi bật lại
+            if wasFlying then toggleFly() end 
+            
+            local btnText = "Fly (Tốc độ: " .. config.flySpeed .. ")"
+            local oldBtn = buttons["Fly (Tốc độ: " .. config.flySpeed .. ")"] or buttons["Fly (Tốc độ: " .. config.flySpeed .. ")"]
+            if oldBtn and oldBtn.btn then oldBtn.btn.Text = btnText end
+            
+            logMsg("System", "Đã set Fly Speed: " .. value, LUXURY_COLOR)
+            return "Đã set Fly Speed thành " .. value .. ". Bấm lại nút Fly để áp dụng."
+        else return "Giá trị tốc độ Fly không hợp lệ (1-1000)." end
+    end
+    
+    if t:find("set run speed") then
+        local value = tonumber(t:gsub("^.*set run speed (%d+).*$", "%1"))
+        if value and value >= 1 and value <= 1000 then
+            config.runSpeed = value
+            if config.isRun then hum.WalkSpeed = config.runSpeed end
+            if speedTextBox then speedTextBox.Text = tostring(config.runSpeed) end
+            return "Đã set Run Speed thành " .. value .. "."
+        else return "Giá trị tốc độ Run không hợp lệ (1-1000)." end
+    end
+
+    if t:find("sửa fly") or t:find("fix fly") then
+        if config.isAIGodMode then
+             hum.PlatformStand = false; Workspace.Gravity = defaultGravity; toggleFly(); toggleFly()
+            return "🛠️ **AI God Fix:** Đã Reset PlatformStand, Gravity và Toggle Fly 2 lần. Fly nên hoạt động lại."
+        else
+            return "🛠️ **Diagnostic:** Vui lòng BẬT **AI GOD MODE** trong Developer Panel (Sau khi nhập mã bí mật) để tôi có thể chạy lệnh sửa lỗi cấp cao."
+        end
+    end
+
+    -- [TRÒ CHUYỆN]
+    if t:find("chào") or t:find("hello") or t:find("bạn là ai") then
+        return "Xin chào! Tôi là V8 Advanced AI, sẵn sàng hỗ trợ bạn điều khiển script. Bạn cần gì hôm nay?"
+    end
+    
+    return "Tôi không hiểu rõ yêu cầu của bạn. Vui lòng gõ 'hướng dẫn' hoặc dùng lệnh Bật/Tắt tính năng."
+end
+
+local function sendChat()
+    local txt = chatInput.Text
+    if txt ~= "" then
+        logMsg("Me", txt, USER_CHAT_COLOR); chatInput.Text = ""; wait(0.2)
+        local ans = processAI(txt); logMsg("AI", ans, AI_CHAT_COLOR)
+    end
+end
+
+-- Hàm tạo nút (đã được định nghĩa ở trên, nhưng cần đưa ra ngoài để GUI gọi được)
+local function createBtn(text, func)
+    local btn = Instance.new("TextButton", scroll); btn.Size = UDim2.new(1, -5, 0, 25) 
+    btn.Text = text; btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    buttons[text] = {btn = btn, state = false, func = func} 
+    
+    btn.MouseButton1Click:Connect(function()
+        if os.time() - config.lastCommandTime < 0.3 then logMsg("AI", "❌ Anti-Repeat: Chờ 0.3s giữa các lệnh.", Color3.fromRGB(255, 50, 50)); return end -- Anti-Repeat
+        config.lastCommandTime = os.time()
+        
+        local isActive = buttons[text].func()
+        buttons[text].state = isActive or false
+        btn.BackgroundColor3 = isActive and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(50, 50, 50)
+        
+        local offset = runSpeedInputBox and runSpeedInputBox.Visible and 35 or 0
+        if scroll then
+            scroll.Position = UDim2.new(0, 10, 0, 40 + offset)
+            scroll.Size = UDim2.new(0.4, 0, 0.75, -offset)
+        end
+    end)
+    return btn
+end
+
+-- ===== GUI SETUP (Kích thước lớn hơn) - Tiếp tục từ code cũ =====
+
+local gui = Instance.new("ScreenGui"); gui.Name = "V8ProAdvanced"; gui.Parent = pl:WaitForChild("PlayerGui"); gui.ResetOnSpawn = false
+
+local function makeDraggable(frame)
+    local dragging, dragInput, dragStart, startPos
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, dragStart, startPos, dragInput = true, input.Position, frame.Position, input
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input) if input == dragInput then dragging = false end end)
+end
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 50, 0, 50); toggleBtn.Text = "V8"; toggleBtn.BackgroundColor3 = LUXURY_COLOR; toggleBtn.Parent = gui; Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(1, 0); makeDraggable(toggleBtn)
+
+local menu = Instance.new("Frame")
+menu.Name = "MainMenu"; menu.Size = UDim2.new(0, 550, 0, 350); menu.Position = UDim2.new(0.5, -275, 0.5, -175) 
+menu.BackgroundColor3 = Color3.fromRGB(15, 15, 25); menu.Visible = false; menu.Parent = gui; makeDraggable(menu)
+Instance.new("UICorner", menu).CornerRadius = UDim.new(0, 8)
+
+scroll = Instance.new("ScrollingFrame", menu); scroll.Size = UDim2.new(0.4, 0, 0.75, 0); scroll.Position = UDim2.new(0, 10, 0, 40)
+scroll.BackgroundTransparency = 1; scroll.ScrollBarThickness = 4
+local uiList = Instance.new("UIListLayout", scroll); uiList.Padding = UDim.new(0, 5); scroll.Parent = menu
+
+-- AI Frame Setup (đã được khai báo)
+local aiFrame = Instance.new("Frame", menu); aiFrame.Size = UDim2.new(0.55, 0, 0.8, 0); aiFrame.Position = UDim2.new(0.43, 0, 0, 30)
+aiFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40); Instance.new("UICorner", aiFrame).CornerRadius = UDim.new(0, 8)
+
+chatLog = Instance.new("ScrollingFrame", aiFrame); chatLog.Size = UDim2.new(1, -10, 0.8, -5); chatLog.Position = UDim2.new(0, 5, 0, 5)
+chatLog.BackgroundTransparency = 1; chatLog.ScrollBarThickness = 4
+logLayout = Instance.new("UIListLayout", chatLog); logLayout.Padding = UDim.new(0, 2)
+
+chatInput = Instance.new("TextBox", aiFrame); chatInput.Size = UDim2.new(0.75, 0, 0.15, 0); chatInput.Position = UDim2.new(0.02, 0, 0.82, 0); chatInput.PlaceholderText = "Trò chuyện, nhập lệnh, hoặc hỏi hướng dẫn..."
+chatInput.BackgroundColor3 = Color3.fromRGB(40, 40, 60); chatInput.TextColor3 = Color3.new(1,1,1)
+sendBtn = Instance.new("TextButton", aiFrame); sendBtn.Size = UDim2.new(0.2, 0, 0.15, 0); sendBtn.Position = UDim2.new(0.78, 0, 0.82, 0); sendBtn.Text = "Gửi"; sendBtn.BackgroundColor3 = LUXURY_COLOR
+
+-- Run Speed Dynamic Input Box Setup (đã được khai báo)
+runSpeedInputBox = Instance.new("Frame", menu)
+runSpeedInputBox.Size = UDim2.new(0, 180, 0, 30); runSpeedInputBox.Position = UDim2.new(0, 10, 0, 70); runSpeedInputBox.ZIndex = 3
+runSpeedInputBox.BackgroundColor3 = Color3.fromRGB(30, 30, 50); runSpeedInputBox.Visible = config.isRun -- Ban đầu là false
+
+local speedLabel = Instance.new("TextLabel", runSpeedInputBox); speedLabel.Size = UDim2.new(0.3, 0, 1, 0); speedLabel.BackgroundTransparency = 1; speedLabel.Text = "Speed:"; speedLabel.TextColor3 = LUXURY_COLOR
+speedTextBox = Instance.new("TextBox", runSpeedInputBox); speedTextBox.Size = UDim2.new(0.6, 0, 0.8, 0); speedTextBox.Position = UDim2.new(0.35, 0, 0.1, 0); speedTextBox.Text = tostring(config.runSpeed)
+
+-- Teleport List Setup (ĐOẠN BỊ THIẾU ĐÃ ĐƯỢC BỔ SUNG)
+PlayerListFrame = Instance.new("Frame", gui); PlayerListFrame.Name = "TeleportList"; PlayerListFrame.Size = UDim2.new(0, 200, 0, 300); PlayerListFrame.Position = UDim2.new(0.5, 270, 0.5, -150); PlayerListFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 60); PlayerListFrame.Visible = false
+local tpTitle = Instance.new("TextLabel", PlayerListFrame); tpTitle.Size = UDim2.new(1, 0, 0, 25); tpTitle.Text = "🚀 TELEPORT LIST"; tpTitle.TextColor3 = LUXURY_COLOR; tpTitle.BackgroundTransparency = 1
+TPScroll = Instance.new("ScrollingFrame", PlayerListFrame); TPScroll.Size = UDim2.new(1, -10, 1, -25); TPScroll.Position = UDim2.new(0, 5, 0, 25); TPScroll.BackgroundTransparency = 1; TPScroll.ScrollBarThickness = 4
+TPListLayout = Instance.new("UIListLayout", TPScroll); TPListLayout.Padding = UDim.new(0, 5)
+
+
+-- Dev Panel Frame Setup (Hoàn thiện)
+devPanel = Instance.new("Frame", gui); devPanel.Name = "DevPanel"; devPanel.Size = UDim2.new(0, 400, 0, 250); devPanel.Position = UDim2.new(0.5, -200, 0.5, -125); devPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 30); devPanel.Visible = false; makeDraggable(devPanel)
+local devTitle = Instance.new("TextLabel", devPanel); devTitle.Size = UDim2.new(1, 0, 0, 25); devTitle.Text = "⚡ DEVELOPER / AI GOD MODE"; devTitle.TextColor3 = Color3.fromRGB(255, 150, 0); devTitle.BackgroundTransparency = 1
+local codeInput = Instance.new("TextBox", devPanel); codeInput.Size = UDim2.new(1, -20, 0.6, 0); codeInput.Position = UDim2.new(0, 10, 0, 30); codeInput.PlaceholderText = "Dán code Lua để TEST (Không Can Thiệp Script Cốt Lõi)..."
+local testBtn = Instance.new("TextButton", devPanel); testBtn.Size = UDim2.new(0.45, 0, 0.15, 0); testBtn.Position = UDim2.new(0, 10, 0.7, 10); testBtn.Text = "⚡ TEST CODE LUA ⚡"; testBtn.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+godModeBtn = Instance.new("TextButton", devPanel); godModeBtn.Size = UDim2.new(0.45, 0, 0.15, 0); godModeBtn.Position = UDim2.new(0.5, 10, 0.7, 10); godModeBtn.Text = "AI GOD MODE (OFF)"; godModeBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+
+
+-- Connect Inputs
+sendBtn.MouseButton1Click:Connect(sendChat)
+chatInput.FocusLost:Connect(function(enter) if enter then sendChat() end end)
+
+speedTextBox.FocusLost:Connect(function(enter)
+    if enter then
+        local newSpeed = tonumber(speedTextBox.Text)
+        if newSpeed and newSpeed >= 1 and newSpeed <= 1000 then
+            config.runSpeed = newSpeed
+            if config.isRun and hum then hum.WalkSpeed = config.runSpeed end
+            logMsg("System", "Đã set Run Speed: " .. newSpeed, LUXURY_COLOR)
+        else
+            logMsg("System", "Tốc độ không hợp lệ (1-1000).", Color3.fromRGB(255, 100, 0))
+            speedTextBox.Text = tostring(config.runSpeed)
+        end
+    end
+end)
+
+testBtn.MouseButton1Click:Connect(function()
+    local success, result = pcall(loadstring(codeInput.Text))
+    if success then logMsg("TEST", "✅ Thành công. Kết quả: " .. tostring(result), Color3.fromRGB(0, 255, 0))
+    else logMsg("TEST", "❌ Lỗi thực thi: " .. tostring(result), Color3.fromRGB(255, 50, 50)) end
+end)
+
+godModeBtn.MouseButton1Click:Connect(function()
+    config.isAIGodMode = not config.isAIGodMode
+    if config.isAIGodMode then 
+        godModeBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0); godModeBtn.Text = "AI GOD MODE (ON)"; 
+        logMsg("AI", "AI God Mode BẬT. Giờ tôi có thể chạy lệnh Fix cấp cao.", LUXURY_COLOR)
+    else 
+        godModeBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0); godModeBtn.Text = "AI GOD MODE (OFF)";
+        logMsg("AI", "AI God Mode TẮT. Tôi sẽ chỉ chạy lệnh an toàn.", Color3.fromRGB(255, 100, 0))
+    end
+end)
+
+toggleBtn.MouseButton1Click:Connect(function() 
+    menu.Visible = not menu.Visible 
+    if not menu.Visible and PlayerListFrame then PlayerListFrame.Visible = false end
+    if not menu.Visible and devPanel then devPanel.Visible = false end
+end)
+
+
+-- Nút chức năng
+local flyBtn = createBtn("Fly (Tốc độ: " .. config.flySpeed .. ")", currentFunctions.toggleFly)
+local runBtn = createBtn("Run Speed (Chỉnh bên dưới)", currentFunctions.toggleRun)
+local godBtn = createBtn("God Mode", currentFunctions.toggleGodMode)
+local noClipBtn = createBtn("NoClip", currentFunctions.toggleNoClip)
+local espBtn = createBtn("ESP (Name/Line)", currentFunctions.toggleESP)
+local fbBtn = createBtn("FullBright", currentFunctions.toggleFullBright)
+local tpBtn = createBtn("Teleport List", currentFunctions.toggleTPList)
+
+-- Khởi tạo ban đầu
+updateButtonState(flyBtn.Text, config.isFly)
+updateButtonState(runBtn.Text, config.isRun)
+updateButtonState(godBtn.Text, config.isGod)
+updateButtonState(noClipBtn.Text, config.isNoClip)
+updateButtonState(espBtn.Text, config.isESP)
+updateButtonState(fbBtn.Text, config.isFullBright)
+
+logMsg("AI", "✅ V8 MASTER SCRIPT V11 đã tải xong. Gõ 'hướng dẫn' để bắt đầu.", AI_CHAT_COLOR)
