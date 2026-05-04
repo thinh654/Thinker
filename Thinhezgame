@@ -1,452 +1,665 @@
--- [[ thinh V1.4 - ANTI-CHEAT & ANTI-BAN BYPASS INTEGRATED ]] --
--- Protection system automatically activates before UI loads
-task.spawn(function()
-    local g = game
-    local w = g.Workspace
-    local p = g.Players.LocalPlayer
-    local getrawmetatable = getrawmetatable or function() return {__index = function() end} end
-    local setreadonly = setreadonly or function() end
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const ytdl = require('@distube/ytdl-core');
+const yts = require('yt-search');
+const schedule = require('node-schedule');
+const gtts = require('node-gtts')('vi');
+const path = require('path');
 
-    local mt = getrawmetatable(g)
-    local old_nc = mt.__namecall
-    setreadonly(mt, false)
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildVoiceStates,
+  ]
+});
 
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "Kick" or method == "kick" then
-            warn("thinh: A Kick attempt has been blocked!")
-            return nil
-        end
-        if method == "FireServer" and (tostring(self):find("AntiCheat") or tostring(self):find("Detector")) then
-            return nil
-        end
-        return old_nc(self, ...)
-    end)
+const TOKEN = 'TOKEN_CỦA_BẠN';
+const spamMap = new Map();
+const welcomeConfig = new Map();
+const points = new Map();
+const gameSession = new Map();
+const inventory = new Map(); // userId -> { luckyPotion: number }
+const verifyConfig = new Map(); // guildId -> { channelId, roleId, messageId }
 
-    local function disableAC()
-        for _, v in pairs(g:GetDescendants()) do
-            if v:IsA("LocalScript") then
-                if v.Name:lower():find("anticheat") or v.Name:lower():find("ac") or v.Name:lower():find("checker") then
-                    v.Disabled = true
-                end
-            end
-        end
-    end
-    disableAC()
-    g.DescendantAdded:Connect(function(v)
-        if v:IsA("LocalScript") and (v.Name:lower():find("anticheat") or v.Name:lower():find("ac")) then
-            v.Disabled = true
-        end
-    end)
-
-    setreadonly(mt, true)
-end)
-
--- [[ INITIALIZING RAYFIELD UI ]] --
-local success, Rayfield = pcall(function()
-    return loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-end)
-
-if not success then return end
-
-local Window = Rayfield:CreateWindow({
-   Name = "thinh | Bite by Night [V1.4]",
-   LoadingTitle = "thinh v1.4 - Initializing...",
-   LoadingSubtitle = "by thinh | Anti-Ban Active ✅",
-   ConfigurationSaving = { Enabled = false },
-   KeySystem = true,
-   KeySettings = {
-      Title = "thinh | Key System v1.4",
-      Subtitle = "TikTok ID: rrrrh107",
-      Note = "Have fun playing! Anti-Ban system is active.",
-      FileName = "thinhKeyV1_4",
-      SaveKey = true,
-      GrabKeyFromSite = false,
-      Key = {"thinhdeptraiv1.4"}
-   }
-})
-
--- [[ RAINBOW FPS COUNTER - OPTIMIZED ]] --
-local FPSGui = Instance.new("ScreenGui")
-local FPSLabel = Instance.new("TextLabel")
-FPSGui.Name = "thinh_FPSCounter_V1_4"
-FPSGui.Parent = game:GetService("CoreGui")
-FPSLabel.Parent = FPSGui
-FPSLabel.BackgroundTransparency = 1
-FPSLabel.Position = UDim2.new(1, -110, 0.09, 0)
-FPSLabel.Size = UDim2.new(0, 100, 0, 30)
-FPSLabel.Font = Enum.Font.GothamBold
-FPSLabel.TextSize = 16
-FPSLabel.TextXAlignment = Enum.TextXAlignment.Right
-
-local fps_count = 0
-local last_tick = tick()
-game:GetService("RunService").RenderStepped:Connect(function()
-    fps_count = fps_count + 1
-    if tick() - last_tick >= 1 then
-        FPSLabel.Text = "FPS: " .. fps_count
-        fps_count = 0
-        last_tick = tick()
-    end
-    local hue = tick() % 5 / 5
-    FPSLabel.TextColor3 = Color3.fromHSV(hue, 1, 1)
-end)
-
--- [[ SYSTEM VARIABLES ]] --
-local _G = {
-    P_ESP = false, K_ESP = false, D_ESP = false, G_ESP = false, B_ESP = false, T_ESP = false, W_ESP = false,
-    InfStamina = false, InfHealth = false, FullBright = false, InfScraps = false, UnlockVIP = false, AntiStun = false,
-    InstantPrompt = false, AimbotEnabled = false, AimbotMethod = "Camera", AimbotM1Only = true, AimbotFOV = 150, AimbotSmoothing = 5,
-    HitboxEnabled = false, HitboxSize = 10, HitboxTransparency = 0.8
+// ==================== HELPER ====================
+function getInventory(userId) {
+  if (!inventory.has(userId)) inventory.set(userId, { luckyPotion: 0 });
+  return inventory.get(userId);
 }
 
--- Cache các service để truy cập nhanh
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local Lighting = game:GetService("Lighting")
-local Workspace = game:GetService("Workspace")
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
+function createGame(mode, userId) {
+  const configs = {
+    easy:    { winRate: 0.37, minPts: 100, maxPts: 100 },
+    hard:    { winRate: 0.20, minPts: 230, maxPts: 230 },
+    extreme: { winRate: 0.055, minPts: 500, maxPts: 1000 },
+  };
+  const cfg = configs[mode];
+  const inv = getInventory(userId);
+  let winRate = cfg.winRate;
+  if (inv.luckyPotion > 0) {
+    winRate += 0.20;
+    inv.luckyPotion -= 1;
+  }
+  const winCard = Math.floor(Math.random() * 5);
+  const isWinnable = Math.random() < winRate;
+  return { winCard: isWinnable ? winCard : -1, isWinnable, cfg };
+}
 
--- Danh sách tên killer
-local KillerList = {"Springtrap", "Mimic", "Ennard", "Slasher", "Killer", "Nightmare", "Freddy", "Bonnie", "Chica", "Foxy", "Puppet", "Ballora"}
+function generateMathProblem() {
+  const types = ['quadratic', 'log', 'trig', 'derivative'];
+  const type = types[Math.floor(Math.random() * types.length)];
+  let question, answer;
 
-local highlights = {}
-local hitboxPlayers = {}
+  if (type === 'quadratic') {
+    const a = Math.floor(Math.random() * 3) + 1;
+    const b = Math.floor(Math.random() * 10) - 5;
+    const c = Math.floor(Math.random() * 6) - 3;
+    const delta = b * b - 4 * a * c;
+    if (delta < 0) return generateMathProblem();
+    const x1 = ((-b + Math.sqrt(delta)) / (2 * a)).toFixed(2);
+    const x2 = ((-b - Math.sqrt(delta)) / (2 * a)).toFixed(2);
+    question = `Giải phương trình: **${a}x² + ${b}x + ${c} = 0**`;
+    answer = x1 === x2 ? `x = ${x1}` : `x₁ = ${x1}, x₂ = ${x2}`;
+  } else if (type === 'log') {
+    const base = [2, 3, 5, 10][Math.floor(Math.random() * 4)];
+    const result = Math.floor(Math.random() * 4) + 1;
+    const val = Math.pow(base, result);
+    question = `Tính: **log₍${base}₎(${val})**`;
+    answer = `${result}`;
+  } else if (type === 'trig') {
+    const angles = [
+      { deg: 0,   sin: '0',        cos: '1',        tan: '0' },
+      { deg: 30,  sin: '1/2',      cos: '√3/2',     tan: '√3/3' },
+      { deg: 45,  sin: '√2/2',     cos: '√2/2',     tan: '1' },
+      { deg: 60,  sin: '√3/2',     cos: '1/2',      tan: '√3' },
+      { deg: 90,  sin: '1',        cos: '0',        tan: 'không xác định' },
+    ];
+    const angle = angles[Math.floor(Math.random() * angles.length)];
+    const funcs = ['sin', 'cos', 'tan'];
+    const fn = funcs[Math.floor(Math.random() * funcs.length)];
+    question = `Tính: **${fn}(${angle.deg}°)**`;
+    answer = fn === 'sin' ? angle.sin : fn === 'cos' ? angle.cos : angle.tan;
+  } else {
+    const exprs = [
+      { q: '**f(x) = x³ + 2x²**', a: "f'(x) = 3x² + 4x" },
+      { q: '**f(x) = sin(x)**',    a: "f'(x) = cos(x)" },
+      { q: '**f(x) = eˣ**',       a: "f'(x) = eˣ" },
+      { q: '**f(x) = ln(x)**',    a: "f'(x) = 1/x" },
+      { q: '**f(x) = x⁴ - 3x**', a: "f'(x) = 4x³ - 3" },
+    ];
+    const expr = exprs[Math.floor(Math.random() * exprs.length)];
+    question = `Tính đạo hàm: ${expr.q}`;
+    answer = expr.a;
+  }
+  return { question, answer };
+}
 
-local IsTyping = false
-local IsClicking = false
+// ==================== READY ====================
+client.once('clientReady', () => {
+  console.log('Bot online!');
+  schedule.scheduleJob('0 6 * * *', async () => {
+    client.guilds.cache.forEach(async (guild) => {
+      const channel = guild.channels.cache.find(
+        c => c.isTextBased() && c.permissionsFor(guild.members.me).has(PermissionsBitField.Flags.SendMessages)
+      );
+      if (channel) {
+        const embed = new EmbedBuilder()
+          .setTitle('☀️ Chào buổi sáng!')
+          .setDescription('Chúc mọi người một ngày tốt lành! 🌟')
+          .setColor(0xffd700)
+          .setTimestamp();
+        await channel.send({ embeds: [embed] });
+      }
+    });
+  });
+});
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then IsClicking = true end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then IsClicking = false end
-end)
-UserInputService.TextBoxFocused:Connect(function() IsTyping = true end)
-UserInputService.TextBoxFocusReleased:Connect(function() IsTyping = false end)
+// ==================== WELCOME ====================
+client.on('guildMemberAdd', async (member) => {
+  const config = welcomeConfig.get(member.guild.id);
+  const channelId = config?.channelId;
+  const welcomeMsg = config?.message || `Chào <@${member.id}> mong bạn có đem theo pizza 🍕`;
+  const channel = channelId
+    ? member.guild.channels.cache.get(channelId)
+    : member.guild.channels.cache.find(c => c.isTextBased());
+  if (!channel) return;
+  const embed = new EmbedBuilder()
+    .setTitle('🎉 Thành viên mới!')
+    .setDescription(welcomeMsg)
+    .setThumbnail(member.user.displayAvatarURL({ size: 512 }))
+    .setColor(0x00ffcc)
+    .setTimestamp()
+    .setFooter({ text: `${member.guild.name} • ${member.guild.memberCount} thành viên` });
+  await channel.send({ embeds: [embed] });
+});
 
--- [[ CORE FUNCTIONS (optimized) ]] --
-local function isKiller(player)
-    if not player then return false end
-    if player:GetAttribute("Role") == "Killer" or player:GetAttribute("IsKiller") == true then return true end
-    if player:GetAttribute("Team") == "Killer" then return true end
-    if player.Team and (player.Team.Name:lower():find("killer") or player.Team.Name:lower():find("slasher")) then return true end
-    if player.Character then
-        local charName = player.Character.Name
-        for _, name in pairs(KillerList) do
-            if string.find(charName, name) or string.find(player.Name, name) then return true end
-        end
-    end
-    return false
-end
+// ==================== MESSAGES ====================
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!message.content) return;
 
-local function getClosestSurvivor()
-    local closestPlayer = nil
-    local shortestDistance = _G.AimbotFOV
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            if not isKiller(player) then
-                local pos, onScreen = Camera:WorldToViewportPoint(player.Character.HumanoidRootPart.Position)
-                if onScreen then
-                    local distance = (Vector2.new(pos.X, pos.Y) - Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)).Magnitude
-                    if distance < shortestDistance then
-                        closestPlayer = player
-                        shortestDistance = distance
-                    end
-                end
-            end
-        end
-    end
-    return closestPlayer
-end
+  const msg = message.content.toLowerCase().trim();
+  const args = message.content.trim().split(/\s+/);
+  const userId = message.author.id;
 
-local function applyESP(obj, type)
-    if not obj or obj:FindFirstChild("thinhHighlight") then return end
-    local hl = Instance.new("Highlight")
-    hl.Name = "thinhHighlight"
-    hl.Parent = obj
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    if type == "D" then hl.FillColor = Color3.fromRGB(255, 255, 255); hl.OutlineColor = Color3.fromRGB(0, 255, 255)
-    elseif type == "G" then hl.FillColor = Color3.fromRGB(255, 255, 0)
-    elseif type == "B" then hl.FillColor = Color3.fromRGB(0, 200, 255)
-    elseif type == "T" then hl.FillColor = Color3.fromRGB(255, 165, 0)
-    elseif type == "W" then hl.FillColor = Color3.fromRGB(255, 0, 255); hl.OutlineColor = Color3.fromRGB(255, 255, 255) end
-    table.insert(highlights, {hl = hl, t = type, o = obj, p = Players:GetPlayerFromCharacter(obj)})
-end
+  // Chống spam
+  const words = msg.split(/\s+/);
+  const wordCount = {};
+  let isSpam = false;
+  for (const word of words) {
+    wordCount[word] = (wordCount[word] || 0) + 1;
+    if (wordCount[word] >= 10) { isSpam = true; break; }
+  }
+  if (isSpam) {
+    const data = spamMap.get(userId) || { violations: 0 };
+    data.violations += 1;
+    spamMap.set(userId, data);
+    await message.delete().catch(() => {});
+    if (data.violations <= 2) {
+      await message.member.timeout(5 * 60 * 1000, 'Spam');
+      const embed = new EmbedBuilder()
+        .setTitle('⚠️ Cảnh báo Spam')
+        .setDescription(`<@${userId}> bị cấm chat **5 phút**! (Vi phạm ${data.violations}/2)`)
+        .setColor(0xff8800);
+      await message.channel.send({ embeds: [embed] });
+    } else {
+      const embed = new EmbedBuilder()
+        .setTitle('🔨 BAN')
+        .setDescription(`<@${userId}> bị **BAN** vì spam quá nhiều!`)
+        .setColor(0xff0000);
+      await message.channel.send({ embeds: [embed] });
+      await message.member.ban({ reason: 'Spam' }).catch(() => {});
+      spamMap.delete(userId);
+    }
+    return;
+  }
 
-local function setupPlayerESP(player)
-    if player == LocalPlayer then return end
-    player.CharacterAdded:Connect(function(char) task.wait(1) applyESP(char, "P") end)
-    if player.Character then applyESP(player.Character, "P") end
-end
-for _, p in pairs(Players:GetPlayers()) do setupPlayerESP(p) end
-Players.PlayerAdded:Connect(setupPlayerESP)
+  // Chào
+  if (msg === 'hi' || msg === 'hello' || msg === 'chào') {
+    const embed = new EmbedBuilder()
+      .setTitle('👋 Xin chào!')
+      .setDescription(`Chào **${message.author.username}**! Bạn là ai vậy? 🤔`)
+      .setColor(0x00ffcc)
+      .setThumbnail(message.author.displayAvatarURL());
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
--- Hitbox functions
-local function resetHitbox(hrp)
-    if hrp and hrp:IsA("BasePart") then
-        hrp.Size = Vector3.new(2, 2, 2)
-        hrp.Transparency = 0
-        hrp.CanCollide = true
-    end
-end
+  // Helpme
+  if (msg === '?helpme') {
+    const embed = new EmbedBuilder()
+      .setTitle('🙏 Bạn cần gì?')
+      .setDescription('Mình có thể giúp gì cho bạn?')
+      .setColor(0x7289da);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
-local function applyHitboxToPlayer(player)
-    if not player or player == LocalPlayer then return end
-    if isKiller(player) then return end
-    local char = player.Character
-    if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            hrp.Size = Vector3.new(_G.HitboxSize, _G.HitboxSize, _G.HitboxSize)
-            hrp.Transparency = _G.HitboxTransparency
-            hrp.CanCollide = false
-            hitboxPlayers[hrp] = true
-        end
-    end
-end
+  // Xin tiền
+  if (msg.includes('5 tỷ') || msg.includes('cho t tiền') || msg.includes('cho mình tiền')) {
+    const embed = new EmbedBuilder()
+      .setTitle('💀 Ôi trời!')
+      .setDescription('Phải có làm thì mới có ăn!\nCòn cái loại không làm như m thì **đi bốc xít đi!** 😂')
+      .setColor(0xff0000);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
-local function updateAllHitboxes()
-    if _G.HitboxEnabled then
-        for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character then
-                if not isKiller(player) then
-                    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-                    if hrp then
-                        hrp.Size = Vector3.new(_G.HitboxSize, _G.HitboxSize, _G.HitboxSize)
-                        hrp.Transparency = _G.HitboxTransparency
-                        hrp.CanCollide = false
-                        hitboxPlayers[hrp] = true
-                    end
-                else
-                    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-                    if hrp and hitboxPlayers[hrp] then
-                        resetHitbox(hrp)
-                        hitboxPlayers[hrp] = nil
-                    end
-                end
-            end
-        end
-    else
-        for hrp, _ in pairs(hitboxPlayers) do
-            resetHitbox(hrp)
-        end
-        hitboxPlayers = {}
-    end
-end
+  // Role
+  if (msg === '?roleme') {
+    const roles = message.member.roles.cache
+      .filter(r => r.name !== '@everyone')
+      .sort((a, b) => b.position - a.position);
+    const topRole = roles.first();
+    const embed = new EmbedBuilder()
+      .setTitle('👑 Role của bạn')
+      .setDescription(topRole ? `Role cao nhất: **${topRole.name}**` : '😅 Bạn chưa có role!')
+      .setColor(topRole ? topRole.color : 0x99aab5);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
--- Kết nối sự kiện nhân vật
-local function onCharacterAdded(player)
-    player.CharacterAdded:Connect(function()
-        task.wait(0.5)
-        if _G.HitboxEnabled then applyHitboxToPlayer(player) end
-    end)
-end
-for _, player in pairs(Players:GetPlayers()) do onCharacterAdded(player) end
-Players.PlayerAdded:Connect(onCharacterAdded)
+  // Thống kê
+  if (msg === '?statistics') {
+    const guild = message.guild;
+    const embed = new EmbedBuilder()
+      .setTitle(`📊 Thống kê: ${guild.name}`)
+      .setThumbnail(guild.iconURL())
+      .addFields(
+        { name: '👥 Tổng thành viên', value: `${guild.memberCount}`, inline: true },
+        { name: '🟢 Online', value: `${guild.members.cache.filter(m => m.presence?.status === 'online' || m.presence?.status === 'idle' || m.presence?.status === 'dnd').size}`, inline: true },
+        { name: '🤖 Bot', value: `${guild.members.cache.filter(m => m.user.bot).size}`, inline: true },
+        { name: '💬 Kênh text', value: `${guild.channels.cache.filter(c => c.type === 0).size}`, inline: true },
+        { name: '🔊 Kênh voice', value: `${guild.channels.cache.filter(c => c.type === 2).size}`, inline: true },
+        { name: '💎 Boost', value: `${guild.premiumSubscriptionCount}`, inline: true },
+      )
+      .setColor(0x00ffcc)
+      .setTimestamp()
+      .setFooter({ text: `Tạo ngày ${guild.createdAt.toLocaleDateString('vi-VN')}` });
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
--- [[ TABS ]] --
-local MainTab = Window:CreateTab("MAIN ESP", 4483362458)
-MainTab:CreateToggle({Name = "Player ESP (Survivor)", CurrentValue = false, Callback = function(v) _G.P_ESP = v end})
-MainTab:CreateToggle({Name = "Killer ESP (Red Detection)", CurrentValue = false, Callback = function(v) _G.K_ESP = v end})
-MainTab:CreateToggle({Name = "Wire Eyes ESP (Ennard)", CurrentValue = false, Callback = function(v) _G.W_ESP = v end})
-MainTab:CreateToggle({Name = "Battery ESP", CurrentValue = false, Callback = function(v) _G.B_ESP = v end})
-MainTab:CreateToggle({Name = "Generator ESP", CurrentValue = false, Callback = function(v) _G.G_ESP = v end})
-MainTab:CreateToggle({Name = "Trap ESP", CurrentValue = false, Callback = function(v) _G.T_ESP = v end})
-MainTab:CreateToggle({Name = "Door/Exit ESP", CurrentValue = false, Callback = function(v) _G.D_ESP = v end})
+  // Avatar
+  if (msg.startsWith('?avatar')) {
+    const target = message.mentions.users.first() || message.author;
+    const embed = new EmbedBuilder()
+      .setTitle(`🖼️ Avatar của ${target.username}`)
+      .setImage(target.displayAvatarURL({ size: 1024, extension: 'png' }))
+      .setColor(0x00ffcc);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
-local KillerTab = Window:CreateTab("KILLER", 4483362458)
-KillerTab:CreateSection("Aimbot Settings")
-KillerTab:CreateToggle({Name = "Enable Aimbot", CurrentValue = false, Callback = function(v) _G.AimbotEnabled = v end})
-KillerTab:CreateToggle({Name = "Lock On M1", CurrentValue = true, Callback = function(v) _G.AimbotM1Only = v end})
-KillerTab:CreateDropdown({Name = "Lock Method", Options = {"Camera", "Character"}, CurrentOption = "Camera", Callback = function(v) _G.AimbotMethod = v end})
-KillerTab:CreateSlider({Name = "Aimbot FOV", Range = {50, 360}, Increment = 5, Suffix = "px", CurrentValue = 150, Callback = function(v) _G.AimbotFOV = v end})
-KillerTab:CreateSlider({Name = "Smoothing", Range = {1, 20}, Increment = 1, Suffix = "x", CurrentValue = 5, Callback = function(v) _G.AimbotSmoothing = v end})
-KillerTab:CreateSection("Hitbox Settings")
-KillerTab:CreateToggle({Name = "Expand Hitbox (Survivor Only)", CurrentValue = false, Callback = function(v) _G.HitboxEnabled = v; updateAllHitboxes() end})
-KillerTab:CreateSlider({Name = "Hitbox Range", Range = {2, 50}, Increment = 1, Suffix = " Studs", CurrentValue = 10, Callback = function(v) _G.HitboxSize = v; if _G.HitboxEnabled then updateAllHitboxes() end end})
-KillerTab:CreateSlider({Name = "Hitbox Transparency", Range = {0, 1}, Increment = 0.05, Suffix = "", CurrentValue = 0.8, Callback = function(v) _G.HitboxTransparency = v; if _G.HitboxEnabled then updateAllHitboxes() end end})
+  // Setup welcome
+  if (msg.startsWith('?setwelcome')) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.reply('❌ Cần quyền **Admin**!');
+      return;
+    }
+    const channel = message.mentions.channels.first();
+    if (!channel) {
+      await message.reply('❌ Dùng: `?setwelcome #channel nội dung`');
+      return;
+    }
+    const welcomeMsg = args.slice(2).join(' ') || 'Chào {user} mong bạn mang theo pizza 🍕';
+    welcomeConfig.set(message.guild.id, { channelId: channel.id, message: welcomeMsg });
+    await message.reply(`✅ Setup welcome tại ${channel}!`);
+    return;
+  }
 
-local PlayerTab = Window:CreateTab("PLAYER", 4483345998)
-PlayerTab:CreateToggle({Name = "Instant Interaction", CurrentValue = false, Callback = function(v) _G.InstantPrompt = v end})
-PlayerTab:CreateToggle({Name = "Set Health to 100", CurrentValue = false, Callback = function(v) _G.InfHealth = v end})
-PlayerTab:CreateToggle({Name = "Infinite Stamina", CurrentValue = false, Callback = function(v) _G.InfStamina = v end})
-PlayerTab:CreateToggle({Name = "Fullbright", CurrentValue = false, Callback = function(v)
-    _G.FullBright = v
-    if not v then Lighting.Brightness = 1; Lighting.ClockTime = 12 end
-end})
+  // Setup verification
+  if (msg.startsWith('?setverify')) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await message.reply('❌ Cần quyền **Admin**!');
+      return;
+    }
+    const channel = message.mentions.channels.first();
+    const role = message.mentions.roles.first();
+    if (!channel || !role) {
+      await message.reply('❌ Dùng: `?setverify #channel @role`');
+      return;
+    }
 
-local MiscTab = Window:CreateTab("MISC / SHOP", 4483362458)
-MiscTab:CreateToggle({Name = "Infinite Scraps (Visual)", CurrentValue = false, Callback = function(v) _G.InfScraps = v end})
-MiscTab:CreateToggle({Name = "Unlock VIP Gamepass", CurrentValue = false, Callback = function(v) _G.UnlockVIP = v end})
-MiscTab:CreateToggle({Name = "Anti-Stun", CurrentValue = false, Callback = function(v) _G.AntiStun = v end})
+    const embed = new EmbedBuilder()
+      .setTitle('✅ Xác minh thành viên')
+      .setDescription('Nhấn nút bên dưới để xác minh và nhận role **' + role.name + '**!')
+      .setColor(0x00ff00)
+      .setFooter({ text: 'Chỉ cần nhấn 1 lần!' });
 
-local SettingTab = Window:CreateTab("SETTING", 4483362458)
-SettingTab:CreateButton({
-    Name = "Fix Lag (Super Optimization)",
-    Callback = function()
-        for _, v in pairs(Workspace:GetDescendants()) do
-            if v:IsA("BasePart") and not v:IsA("MeshPart") then
-                v.Material = Enum.Material.Plastic
-                v.Reflectance = 0
-            elseif v:IsA("Decal") or v:IsA("Texture") then
-                v.Transparency = 1
-            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
-                v.Enabled = false
-            end
-        end
-        Rayfield:Notify({Title = "thinh v1.4", Content = "Optimization Applied!", Duration = 3})
-    end,
-})
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`verify_${role.id}`)
+        .setLabel('✅ Xác minh ngay!')
+        .setStyle(ButtonStyle.Success)
+    );
 
-SettingTab:CreateButton({
-    Name = "Unlock 120 FPS Mobile",
-    Callback = function()
-        if setfpscap then
-            setfpscap(120)
-            Rayfield:Notify({Title = "thinh v1.4", Content = "FPS Unlocked!", Duration = 3})
-        else
-            Rayfield:Notify({Title = "Error", Content = "Your executor is not supported!", Duration = 3})
-        end
-    end,
-})
+    await channel.send({ embeds: [embed], components: [row] });
+    await message.reply(`✅ Đã tạo verification tại ${channel}!`);
+    return;
+  }
 
-local InfoTab = Window:CreateTab("INFO", 4483362458)
-InfoTab:CreateSection("Contact Me")
-InfoTab:CreateLabel("ID TikTok: rrrrh107")
-InfoTab:CreateParagraph({Title = "thinh v1.4 Final", Content = "Version 1.4 is now live!\nImproved processing speed and user interface."})
+  // Xem điểm
+  if (msg === '?points') {
+    const pt = points.get(userId) || 0;
+    const inv = getInventory(userId);
+    const embed = new EmbedBuilder()
+      .setTitle('💰 Thông tin tài khoản')
+      .setThumbnail(message.author.displayAvatarURL())
+      .addFields(
+        { name: '💎 Points', value: `${pt} pts`, inline: true },
+        { name: '🧪 Bình thuốc may mắn', value: `${inv.luckyPotion}`, inline: true },
+      )
+      .setColor(0xffd700);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
 
--- [[ ITEM SCANNING SYSTEM (optimized loop) ]] --
-task.spawn(function()
-    local lastSize = 0
-    while task.wait(3) do
-        -- Giảm tải bằng cách chỉ quét các đối tượng thực sự cần
-        local descendants = Workspace:GetDescendants()
-        for i = 1, #descendants do
-            local o = descendants[i]
-            if o:IsA("Model") or o:IsA("BasePart") then
-                local name = o.Name:lower()
-                if name:find("wire eye") or name:find("ennardeye") or name:find("minion") then
-                    applyESP(o, "W")
-                end
-                local isExit = name:find("exit") or name:find("escape") or name:find("gate") or name:find("vent") or name:find("hatch")
-                if isExit and not name:find("wall") and not name:find("floor") then
-                    if o:FindFirstChildOfClass("ProximityPrompt") or o:IsA("Model") then
-                        applyESP(o, "D")
-                    end
-                end
-                if name:find("generator") or o:FindFirstChild("Gen") then
-                    applyESP(o, "G")
-                elseif name:find("battery") or name:find("cell") or name:find("power unit") then
-                    applyESP(o, "B")
-                elseif name:find("trap") or name:find("bear") then
-                    applyESP(o, "T")
-                end
-            end
-        end
-        -- Tối ưu prompt nếu bật Instant Interaction
-        if _G.InstantPrompt then
-            for _, prompt in pairs(Workspace:GetDescendants()) do
-                if prompt:IsA("ProximityPrompt") then
-                    prompt.HoldDuration = 0
-                end
-            end
-        end
-    end
-end)
+  // Đổi thưởng
+  if (msg.startsWith('?redeem')) {
+    const item = args[1];
+    const pt = points.get(userId) || 0;
 
--- [[ HEARTBEAT SYSTEM (optimized) ]] --
-local lastHitboxSize = 0
-local lastHitboxTransparency = 0
+    if (!item) {
+      const embed = new EmbedBuilder()
+        .setTitle('🎁 Đổi thưởng')
+        .addFields(
+          { name: '👑 Thần may mắn', value: '1500 pts → Role Thần May Mắn', inline: false },
+          { name: '🧪 Bình thuốc may mắn', value: '180 pts → +20% tỷ lệ thắng (1 lần)', inline: false },
+        )
+        .setDescription('Dùng: `?redeem lucky_role` hoặc `?redeem potion`')
+        .setColor(0xffd700);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
 
-RunService.Heartbeat:Connect(function()
-    local char = LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if _G.InfHealth and hum and hum.Health < 100 then
-            hum.Health = 100
-        end
-        if _G.InfStamina then
-            char:SetAttribute("Stamina", 100)
-        end
-        if _G.AntiStun then
-            local stunAttributes = {"Stunned", "Stun", "Disabled", "ActionBlocked"}
-            for _, attr in pairs(stunAttributes) do
-                if char:GetAttribute(attr) then
-                    char:SetAttribute(attr, false)
-                end
-            end
-            if hum then
-                hum.PlatformStand = false
-                hum.Sit = false
-                if hum.WalkSpeed < 10 then hum.WalkSpeed = 16 end
-            end
-        end
-    end
+    if (item === 'lucky_role') {
+      if (pt < 1500) {
+        await message.reply(`❌ Không đủ điểm! Cần **1500 pts**, bạn có **${pt} pts**`);
+        return;
+      }
+      const role = message.guild.roles.cache.find(r => r.name === 'Thần May Mắn');
+      if (!role) {
+        await message.reply('❌ Role **Thần May Mắn** chưa được tạo trong server! Admin cần tạo role này trước!');
+        return;
+      }
+      await message.member.roles.add(role);
+      points.set(userId, pt - 1500);
+      const embed = new EmbedBuilder()
+        .setTitle('🎊 Đổi thưởng thành công!')
+        .setDescription(`Bạn đã nhận được role **Thần May Mắn**! 👑\nCòn lại: **${pt - 1500} pts**`)
+        .setColor(0xffd700);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
 
-    if _G.FullBright then
-        Lighting.Brightness = 2
-        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
-    end
+    if (item === 'potion') {
+      if (pt < 180) {
+        await message.reply(`❌ Không đủ điểm! Cần **180 pts**, bạn có **${pt} pts**`);
+        return;
+      }
+      points.set(userId, pt - 180);
+      const inv = getInventory(userId);
+      inv.luckyPotion += 1;
+      const embed = new EmbedBuilder()
+        .setTitle('🧪 Đổi thưởng thành công!')
+        .setDescription(`Bạn đã nhận được **1 Bình Thuốc May Mắn**! (+20% thắng lần sau)\nCòn lại: **${pt - 180} pts**`)
+        .setColor(0x00ff99);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
 
-    -- Chỉ cập nhật hitbox khi có thay đổi và đang bật
-    if _G.HitboxEnabled then
-        if lastHitboxSize ~= _G.HitboxSize or lastHitboxTransparency ~= _G.HitboxTransparency then
-            lastHitboxSize = _G.HitboxSize
-            lastHitboxTransparency = _G.HitboxTransparency
-            updateAllHitboxes()
-        end
-    else
-        -- Nếu hitbox tắt nhưng vẫn còn dữ liệu trong hitboxPlayers thì reset
-        if next(hitboxPlayers) ~= nil then
-            updateAllHitboxes()
-        end
-    end
+    await message.reply('❌ Item không hợp lệ! Dùng `?redeem` để xem danh sách!');
+    return;
+  }
 
-    -- Aimbot
-    if _G.AimbotEnabled and not IsTyping and isKiller(LocalPlayer) then
-        local target = getClosestSurvivor()
-        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-            if not _G.AimbotM1Only or (_G.AimbotM1Only and IsClicking) then
-                local targetPos = target.Character.HumanoidRootPart.Position
-                if _G.AimbotMethod == "Camera" then
-                    Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, targetPos), 1 / _G.AimbotSmoothing)
-                elseif _G.AimbotMethod == "Character" and char and char:FindFirstChild("HumanoidRootPart") then
-                    local root = char.HumanoidRootPart
-                    root.CFrame = root.CFrame:Lerp(CFrame.new(root.Position, Vector3.new(targetPos.X, root.Position.Y, targetPos.Z)), 1 / _G.AimbotSmoothing)
-                end
-            end
-        end
-    end
+  // Toán cấp 3
+  if (msg === '?math') {
+    const { question, answer } = generateMathProblem();
+    const embed = new EmbedBuilder()
+      .setTitle('📐 Giải Toán Cấp 3')
+      .setDescription(question + '\n\n*Trả lời bằng cách nhắn đáp án trong 30 giây!*')
+      .setColor(0x3498db)
+      .setFooter({ text: 'Gợi ý: Nhắn đáp án chính xác để nhận 50 pts!' });
+    await message.reply({ embeds: [embed] });
 
-    -- ESP highlight state update (tối ưu bằng cách chỉ duyệt khi cần)
-    for i = #highlights, 1, -1 do
-        local data = highlights[i]
-        if data.hl and data.hl.Parent then
-            if data.p then
-                local killer = isKiller(data.p)
-                data.hl.FillColor = killer and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(0, 255, 100)
-                data.hl.Enabled = (killer and _G.K_ESP) or (not killer and _G.P_ESP)
-            else
-                if data.t == "G" then data.hl.Enabled = _G.G_ESP
-                elseif data.t == "B" then data.hl.Enabled = _G.B_ESP
-                elseif data.t == "D" then data.hl.Enabled = _G.D_ESP
-                elseif data.t == "T" then data.hl.Enabled = _G.T_ESP
-                elseif data.t == "W" then data.hl.Enabled = _G.W_ESP
-                end
-            end
-        else
-            table.remove(highlights, i)
-        end
-    end
-end)
+    const filter = m => m.author.id === userId;
+    const collector = message.channel.createMessageCollector({ filter, time: 30000, max: 1 });
 
-Rayfield:Notify({
-   Title = "thinh v1.4 Loaded!",
-   Content = "Anti-Ban protection system activated successfully!",
-   Duration = 5,
-   Image = 4483362458,
-})
+    collector.on('collect', async m => {
+      const userAnswer = m.content.trim().toLowerCase().replace(/\s/g, '');
+      const correctAnswer = answer.toLowerCase().replace(/\s/g, '');
+      if (userAnswer === correctAnswer) {
+        const current = points.get(userId) || 0;
+        points.set(userId, current + 50);
+        const embed = new EmbedBuilder()
+          .setTitle('✅ Đúng rồi!')
+          .setDescription(`Đáp án: **${answer}**\n🎉 Bạn nhận được **+50 pts**!`)
+          .setColor(0x00ff00);
+        await m.reply({ embeds: [embed] });
+      } else {
+        const embed = new EmbedBuilder()
+          .setTitle('❌ Sai rồi!')
+          .setDescription(`Đáp án đúng là: **${answer}**`)
+          .setColor(0xff0000);
+        await m.reply({ embeds: [embed] });
+      }
+    });
+
+    collector.on('end', (collected) => {
+      if (collected.size === 0) {
+        const embed = new EmbedBuilder()
+          .setTitle('⏰ Hết giờ!')
+          .setDescription(`Đáp án đúng là: **${answer}**`)
+          .setColor(0xff8800);
+        message.channel.send({ embeds: [embed] });
+      }
+    });
+    return;
+  }
+
+  // Mini game
+  if (msg.startsWith('?game')) {
+    const mode = args[1]?.toLowerCase();
+    if (!['easy', 'hard', 'extreme'].includes(mode)) {
+      const embed = new EmbedBuilder()
+        .setTitle('🎮 Mini Game - Lá Bài May Mắn')
+        .addFields(
+          { name: '😊 Easy', value: '`?game easy` - 35-40% thắng, +100 pts', inline: false },
+          { name: '😤 Hard', value: '`?game hard` - 15-25% thắng, +230 pts', inline: false },
+          { name: '💀 Extreme', value: '`?game extreme` - 5-6% thắng, +500-1000 pts', inline: false },
+        )
+        .setColor(0x9b59b6);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    const game = createGame(mode, userId);
+    gameSession.set(userId, { mode, game });
+    const inv = getInventory(userId);
+
+    const modeNames = { easy: '😊 Dễ', hard: '😤 Khó', extreme: '💀 Cực Khó' };
+    const modeColors = { easy: 0x00ff00, hard: 0xff8800, extreme: 0xff0000 };
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`card_0_${userId}`).setLabel('🃏 Lá 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`card_1_${userId}`).setLabel('🃏 Lá 2').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`card_2_${userId}`).setLabel('🃏 Lá 3').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`card_3_${userId}`).setLabel('🃏 Lá 4').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`card_4_${userId}`).setLabel('🃏 Lá 5').setStyle(ButtonStyle.Primary),
+    );
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🎮 Mini Game - ${modeNames[mode]}`)
+      .setDescription('Chọn **1 trong 5 lá bài**!\nMột lá bài ẩn chứa phần thưởng! 🤞')
+      .addFields(
+        { name: '💰 Điểm hiện tại', value: `${points.get(userId) || 0} pts`, inline: true },
+        { name: '🧪 Bình thuốc', value: `${inv.luckyPotion} cái`, inline: true },
+      )
+      .setColor(modeColors[mode])
+      .setFooter({ text: inv.luckyPotion > 0 ? '🧪 Bình thuốc may mắn đang được dùng! (+20%)' : 'Dùng ?redeem potion để tăng tỷ lệ thắng!' });
+
+    await message.reply({ embeds: [embed], components: [row] });
+    return;
+  }
+
+  // Phát nhạc
+  if (msg.startsWith('?play')) {
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) {
+      await message.reply('Vào voice channel trước! 🔊');
+      return;
+    }
+    const query = args.slice(1).join(' ');
+    if (!query) {
+      await message.reply('❌ Dùng: `?play tên bài hát`');
+      return;
+    }
+    await message.reply(`🔍 Đang tìm: **${query}**...`);
+    try {
+      const result = await yts(query);
+      const video = result.videos[0];
+      if (!video) {
+        await message.channel.send('❌ Không tìm thấy!');
+        return;
+      }
+      const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: message.guild.id,
+        adapterCreator: message.guild.voiceAdapterCreator,
+      });
+      const stream = ytdl(video.url, { filter: 'audioonly', quality: 'lowestaudio', highWaterMark: 1 << 25 });
+      const resource = createAudioResource(stream);
+      const player = createAudioPlayer();
+      player.play(resource);
+      connection.subscribe(player);
+      const embed = new EmbedBuilder()
+        .setTitle('🎵 Đang phát nhạc')
+        .setDescription(`**${video.title}**`)
+        .setThumbnail(video.thumbnail)
+        .addFields(
+          { name: '⏱️ Thời lượng', value: video.duration.timestamp, inline: true },
+          { name: '👁️ Lượt xem', value: video.views.toLocaleString(), inline: true },
+        )
+        .setColor(0xff0000)
+        .setURL(video.url);
+      await message.channel.send({ embeds: [embed] });
+      player.on(AudioPlayerStatus.Idle, () => connection.destroy());
+    } catch (err) {
+      console.error(err);
+      await message.channel.send('❌ Lỗi phát nhạc!');
+    }
+    return;
+  }
+
+  // Dừng nhạc
+  if (msg === '?stop') {
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) {
+      await message.reply('Bạn không ở trong voice channel!');
+      return;
+    }
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator,
+    });
+    connection.destroy();
+    await message.reply('⏹️ Đã dừng nhạc!');
+    return;
+  }
+
+  // Mèo béo TTS
+  if (msg.includes('mèo béo')) {
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) {
+      await message.reply('Vào voice channel trước! 🔊');
+      return;
+    }
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator,
+    });
+    const filePath = path.join(__dirname, 'tts.mp3');
+    gtts.save(filePath, 'Tao không béo!', () => {
+      const player = createAudioPlayer();
+      const resource = createAudioResource(filePath);
+      player.play(resource);
+      connection.subscribe(player);
+    });
+    return;
+  }
+
+  // Menu
+  if (msg === '?menu') {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('noi_chuyen').setLabel('💬 Nói chuyện').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('tro_giup').setLabel('📖 Trợ giúp').setStyle(ButtonStyle.Success),
+    );
+    const embed = new EmbedBuilder()
+      .setTitle('📋 Menu chính')
+      .setDescription('Chọn một tùy chọn bên dưới!')
+      .setColor(0x7289da);
+    await message.reply({ embeds: [embed], components: [row] });
+    return;
+  }
+});
+
+// ==================== INTERACTIONS ====================
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  // Verify
+  if (interaction.customId.startsWith('verify_')) {
+    const roleId = interaction.customId.split('_')[1];
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role) {
+      await interaction.reply({ content: '❌ Role không tồn tại!', ephemeral: true });
+      return;
+    }
+    if (interaction.member.roles.cache.has(roleId)) {
+      await interaction.reply({ content: '✅ Bạn đã được xác minh rồi!', ephemeral: true });
+      return;
+    }
+    await interaction.member.roles.add(role);
+    await interaction.reply({ content: `✅ Xác minh thành công! Bạn đã nhận được role **${role.name}**!`, ephemeral: true });
+    return;
+  }
+
+  // Menu
+  if (interaction.customId === 'noi_chuyen') {
+    await interaction.reply({ content: '💬 Bạn muốn nói gì? Cứ nhắn thoải mái!', ephemeral: true });
+    return;
+  }
+
+  if (interaction.customId === 'tro_giup') {
+    const embed = new EmbedBuilder()
+      .setTitle('📖 Danh sách lệnh')
+      .addFields(
+        { name: '💬 Chat', value: '`hi` `?helpme` `?menu`', inline: false },
+        { name: '👤 Thông tin', value: '`?roleme` `?avatar` `?statistics` `?points`', inline: false },
+        { name: '🎮 Game', value: '`?game easy/hard/extreme` `?math`', inline: false },
+        { name: '🎁 Đổi thưởng', value: '`?redeem lucky_role` `?redeem potion`', inline: false },
+        { name: '🎵 Nhạc', value: '`?play tên bài` `?stop`', inline: false },
+        { name: '⚙️ Admin', value: '`?setwelcome` `?setverify`', inline: false },
+      )
+      .setColor(0x7289da);
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
+
+  // Game cards
+  if (interaction.customId.startsWith('card_')) {
+    const parts = interaction.customId.split('_');
+    const cardIndex = parseInt(parts[1]);
+    const ownerId = parts[2];
+
+    if (interaction.user.id !== ownerId) {
+      await interaction.reply({ content: '❌ Đây không phải game của bạn!', ephemeral: true });
+      return;
+    }
+
+    const session = gameSession.get(ownerId);
+    if (!session) {
+      await interaction.reply({ content: '❌ Game đã kết thúc!', ephemeral: true });
+      return;
+    }
+
+    gameSession.delete(ownerId);
+    const { game } = session;
+    const isWin = game.isWinnable && cardIndex === game.winCard;
+
+    let earnedPts = 0;
+    if (isWin) {
+      earnedPts = Math.floor(Math.random() * (game.cfg.maxPts - game.cfg.minPts + 1) + game.cfg.minPts);
+      const current = points.get(ownerId) || 0;
+      points.set(ownerId, current + earnedPts);
+    }
+
+    const cards = ['🃏', '🃏', '🃏', '🃏', '🃏'];
+    cards[cardIndex] = isWin ? '✅' : '❌';
+    if (!isWin && game.isWinnable) cards[game.winCard] = '💰';
+
+    const embed = new EmbedBuilder()
+      .setTitle(isWin ? '🎉 THẮNG!' : '💀 THUA!')
+      .setDescription(
+        `Bạn chọn: **Lá ${cardIndex + 1}** ${cards[cardIndex]}\n\n` +
+        `${cards.join('  ')}\n\n` +
+        (isWin
+          ? `🎊 Bạn nhận được **+${earnedPts} points**!`
+          : `😢 Lá may mắn là **Lá ${game.isWinnable ? game.winCard + 1 : 'không có lần này'}**`)
+      )
+      .setColor(isWin ? 0x00ff00 : 0xff0000)
+      .setFooter({ text: `Tổng điểm: ${points.get(ownerId) || 0} pts` });
+
+    await interaction.update({ embeds: [embed], components: [] });
+  }
+});
+
+client.login(TOKEN);
